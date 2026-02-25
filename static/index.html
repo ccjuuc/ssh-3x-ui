@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3x-ui 代理服务部署</title>
+    <style>
+        :root {
+            --bg: #0f0f12;
+            --surface: #1a1a20;
+            --border: #2a2a32;
+            --text: #e4e4e7;
+            --text-muted: #a1a1aa;
+            --accent: #6366f1;
+            --accent-hover: #818cf8;
+            --success: #22c55e;
+            --error: #ef4444;
+            --danger: #dc3545;
+            --radius: 10px;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+        .container {
+            max-width: 520px;
+            margin: 0 auto;
+            padding: 2rem 1rem;
+        }
+        h1 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(135deg, #a78bfa, #6366f1);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .subtitle {
+            color: var(--text-muted);
+            font-size: 0.875rem;
+            margin-bottom: 2rem;
+        }
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+        .card h2 {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 1rem;
+        }
+        .form-group {
+            margin-bottom: 1rem;
+        }
+        .form-group:last-child { margin-bottom: 0; }
+        label {
+            display: block;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            margin-bottom: 0.35rem;
+        }
+        input {
+            width: 100%;
+            padding: 0.6rem 0.75rem;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text);
+            font-family: inherit;
+            font-size: 0.9rem;
+        }
+        input:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+        input::placeholder { color: var(--text-muted); opacity: 0.7; }
+        .row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+        }
+        button {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            background: var(--accent);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-family: inherit;
+            font-size: 0.95rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        button:hover { background: var(--accent-hover); }
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        .btn-secondary {
+            background: var(--border);
+            flex: 1;
+            margin-right: 0.5rem;
+        }
+        .btn-secondary:hover { background: #3a3a42; }
+        .btn-primary {
+            background: var(--accent);
+            flex: 1;
+        }
+        .btn-primary:hover { background: var(--accent-hover); }
+        .btn-row {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: 1rem;
+        }
+        .inbound-item {
+            padding: 0.5rem 0.75rem;
+            background: var(--bg);
+            border-radius: 6px;
+            margin-bottom: 0.5rem;
+            font-size: 0.8rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .inbound-item .tag { color: var(--accent); font-weight: 500; }
+        .btn-row { display: flex; gap: 0.75rem; margin-top: 1rem; }
+        .btn-row button { flex: 1; }
+        .btn-secondary {
+            background: var(--border);
+            color: var(--text);
+        }
+        .btn-secondary:hover { background: #3a3a42; }
+        .btn-primary { background: var(--accent); }
+        .inbound-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; margin-top: 0.5rem; }
+        .inbound-table th, .inbound-table td { padding: 0.5rem; text-align: left; border-bottom: 1px solid var(--border); }
+        .inbound-table th { color: var(--text-muted); font-weight: 500; }
+        .result {
+            margin-top: 1.5rem;
+            padding: 1rem;
+            border-radius: 6px;
+            font-size: 0.9rem;
+        }
+        .result.success {
+            background: rgba(34, 197, 94, 0.15);
+            border: 1px solid rgba(34, 197, 94, 0.4);
+            color: var(--success);
+        }
+        .result.error {
+            background: rgba(239, 68, 68, 0.15);
+            border: 1px solid rgba(239, 68, 68, 0.4);
+            color: var(--error);
+        }
+        .result a {
+            color: var(--accent);
+            text-decoration: none;
+            word-break: break-all;
+        }
+        .result a:hover { text-decoration: underline; }
+        .result .url { margin-top: 0.5rem; font-weight: 500; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>3x-ui 代理服务部署</h1>
+        <p class="subtitle">通过 SSH 连接服务器，一键安装 3x-ui 面板</p>
+
+        <form id="deployForm">
+            <div class="card">
+                <h2>SSH 连接信息</h2>
+                <div class="form-group">
+                    <label for="host">服务器 IP 或域名</label>
+                    <input type="text" id="host" name="host" placeholder="192.168.1.100 或 vps.example.com" required>
+                </div>
+                <div class="row">
+                    <div class="form-group">
+                        <label for="port">SSH 端口</label>
+                        <input type="number" id="port" name="port" value="22" min="1" max="65535" placeholder="22">
+                    </div>
+                    <div class="form-group">
+                        <label for="username">账户名</label>
+                        <input type="text" id="username" name="username" placeholder="root" value="root" required>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="password">密码</label>
+                    <input type="text" id="password" name="password" placeholder="SSH 登录密码" required>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>3x-ui 面板配置</h2>
+                <div class="form-group">
+                    <label for="domain">访问域名（可选，留空则用 IP 访问）</label>
+                    <input type="text" id="domain" name="domain" placeholder="panel.example.com">
+                </div>
+                <div class="row">
+                    <div class="form-group">
+                        <label for="panel_username">面板用户名</label>
+                        <input type="text" id="panel_username" name="panel_username" placeholder="admin" value="admin">
+                    </div>
+                    <div class="form-group">
+                        <label for="panel_password">面板密码</label>
+                        <input type="password" id="panel_password" name="panel_password" placeholder="admin" value="admin">
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="form-group">
+                        <label for="panel_port">面板端口</label>
+                        <input type="number" id="panel_port" name="panel_port" value="6789" min="1" max="65535" placeholder="6789">
+                    </div>
+                    <div class="form-group">
+                        <label for="web_base_path">Web 路径</label>
+                        <input type="text" id="web_base_path" name="web_base_path" placeholder="panel" value="panel">
+                    </div>
+                </div>
+                <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.5rem;">
+                    管控页面地址示例: https://IP:6789/panel 或 https://域名:6789/panel
+                </p>
+                <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">
+                    一键部署：自动开放防火墙 80/443/面板端口，安装 SSL 证书，添加默认 VLESS 入站(443)
+                </p>
+            </div>
+
+            <button type="submit" id="submitBtn">开始部署</button>
+        </form>
+
+        <div class="card" style="margin-top: 1.5rem; border-color: var(--accent);">
+            <h2>添加入站 / 入站列表</h2>
+            <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">对已部署的面板，通过 SSH 连接后添加入站或查看入站列表。默认 VMess + gRPC + TLS(443)，证书域名需与 x-ui 18 号菜单安装的域名一致。</p>
+            <form id="inboundForm">
+                <div class="form-group">
+                    <label for="inbound_host">服务器 IP 或域名</label>
+                    <input type="text" id="inbound_host" name="inbound_host" placeholder="192.168.1.100" required>
+                </div>
+                <div class="row">
+                    <div class="form-group">
+                        <label for="inbound_ssh_port">SSH 端口</label>
+                        <input type="number" id="inbound_ssh_port" value="22" min="1" max="65535">
+                    </div>
+                    <div class="form-group">
+                        <label for="inbound_panel_port">面板端口</label>
+                        <input type="number" id="inbound_panel_port" value="6789" min="1" max="65535">
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="form-group">
+                        <label for="inbound_username">SSH 账户</label>
+                        <input type="text" id="inbound_username" value="root" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="inbound_password">SSH 密码</label>
+                        <input type="text" id="inbound_password" placeholder="SSH 密码" required>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="form-group">
+                        <label for="inbound_panel_user">面板用户名</label>
+                        <input type="text" id="inbound_panel_user" value="admin">
+                    </div>
+                    <div class="form-group">
+                        <label for="inbound_panel_pass">面板密码</label>
+                        <input type="text" id="inbound_panel_pass" value="admin">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="inbound_web_path">Web 路径</label>
+                    <input type="text" id="inbound_web_path" value="panel" placeholder="panel">
+                </div>
+                <div class="btn-row">
+                    <button type="button" id="listInboundsBtn" class="btn-secondary">获取入站列表</button>
+                    <button type="button" id="addInboundBtn" class="btn-primary">添加入站</button>
+                </div>
+            </form>
+            <div id="addInboundSection" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border);">
+                <h3 style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.75rem;">新入站配置</h3>
+                <div class="row">
+                    <div class="form-group">
+                        <label for="inbound_protocol">协议</label>
+                        <select id="inbound_protocol" style="width:100%;padding:0.6rem;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);">
+                            <option value="vless">VLESS</option>
+                            <option value="vmess" selected>VMess</option>
+                            <option value="trojan">Trojan</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="inbound_port">入站端口</label>
+                        <input type="number" id="inbound_port" value="443" min="1" max="65535">
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="form-group">
+                        <label for="inbound_remark">备注</label>
+                        <input type="text" id="inbound_remark" value="et" placeholder="备注名">
+                    </div>
+                    <div class="form-group">
+                        <label for="inbound_network">传输</label>
+                        <select id="inbound_network" style="width:100%;padding:0.6rem;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);">
+                            <option value="tcp">TCP</option>
+                            <option value="ws">WebSocket</option>
+                            <option value="grpc" selected>gRPC</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="inbound_cert_domain">证书域名（TLS 证书路径 /root/cert/域名/）</label>
+                    <input type="text" id="inbound_cert_domain" placeholder="www.ettreasure.com" title="与 x-ui 18 号菜单安装的证书域名一致，客户端地址也需填此域名">
+                </div>
+                <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: -0.5rem;">
+                    若测速报 403：① 证书域名必填且与客户端地址一致 ② 部分测速站会拦截代理 IP，可先访问 google.com 验证
+                </p>
+                <div class="form-group">
+                    <label><input type="checkbox" id="inbound_tls" checked> 启用 TLS</label>
+                </div>
+            </div>
+            <div id="inboundsList" style="margin-top: 1rem; font-size: 0.85rem;"></div>
+        </div>
+
+        <div class="card" style="margin-top: 1.5rem; border-color: var(--danger);">
+            <h2>卸载 3x-ui</h2>
+            <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">使用 x-ui 菜单卸载，将移除 3x-ui 面板及 Xray。请确认服务器 SSH 信息正确。</p>
+            <form id="uninstallForm">
+                <div class="row">
+                    <div class="form-group" style="flex: 2;">
+                        <label for="uninstall_host">服务器 IP 或域名</label>
+                        <input type="text" id="uninstall_host" name="uninstall_host" placeholder="192.168.1.100" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="uninstall_port">SSH 端口</label>
+                        <input type="number" id="uninstall_port" name="uninstall_port" value="22" min="1" max="65535">
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="form-group">
+                        <label for="uninstall_username">账户名</label>
+                        <input type="text" id="uninstall_username" name="uninstall_username" placeholder="root" value="root" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="uninstall_password">密码</label>
+                        <input type="text" id="uninstall_password" name="uninstall_password" placeholder="SSH 登录密码" required>
+                    </div>
+                </div>
+                <button type="submit" id="uninstallBtn" style="background: var(--danger);">卸载 3x-ui</button>
+            </form>
+        </div>
+
+        <div id="result"></div>
+    </div>
+
+    <script>
+        const form = document.getElementById('deployForm');
+        const resultEl = document.getElementById('result');
+        const submitBtn = document.getElementById('submitBtn');
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            submitBtn.disabled = true;
+            resultEl.innerHTML = '<div class="result" style="border-color: var(--accent);">正在连接并安装，请稍候（约 1–3 分钟）...</div>';
+
+            const data = {
+                host: document.getElementById('host').value.trim(),
+                port: parseInt(document.getElementById('port').value) || 22,
+                username: document.getElementById('username').value.trim() || 'root',
+                password: document.getElementById('password').value,
+                domain: document.getElementById('domain').value.trim() || null,
+                panel_port: parseInt(document.getElementById('panel_port').value) || 6789,
+                web_base_path: document.getElementById('web_base_path').value.trim() || 'panel',
+                panel_username: document.getElementById('panel_username').value.trim() || 'admin',
+                panel_password: document.getElementById('panel_password').value || 'admin'
+            };
+
+            try {
+                const res = await fetch('/api/deploy', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+                const json = await res.json();
+
+                if (json.success) {
+                    let html = '<div class="result success">';
+                    html += '<strong>部署成功</strong><br>' + json.message;
+                    if (json.panel_username && json.panel_password) {
+                        html += '<div style="margin-top:0.5rem;">用户名: <strong>' + json.panel_username + '</strong> &nbsp; 密码: <strong>' + json.panel_password + '</strong></div>';
+                    }
+                    if (json.panel_url) {
+                        html += '<div class="url">管控页面: <a href="' + json.panel_url + '" target="_blank">' + json.panel_url + '</a></div>';
+                    }
+                    html += '</div>';
+                    resultEl.innerHTML = html;
+                } else {
+                    resultEl.innerHTML = '<div class="result error"><strong>部署失败</strong><br>' + json.message + '</div>';
+                }
+            } catch (err) {
+                resultEl.innerHTML = '<div class="result error"><strong>请求失败</strong><br>' + err.message + '</div>';
+            }
+            submitBtn.disabled = false;
+        });
+
+        const uninstallForm = document.getElementById('uninstallForm');
+        const uninstallBtn = document.getElementById('uninstallBtn');
+
+        uninstallForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if (!confirm('确定要卸载该服务器上的 3x-ui 吗？此操作不可恢复。')) return;
+            uninstallBtn.disabled = true;
+            resultEl.innerHTML = '<div class="result" style="border-color: var(--danger);">正在连接并卸载，请稍候...</div>';
+
+            const data = {
+                host: document.getElementById('uninstall_host').value.trim(),
+                port: parseInt(document.getElementById('uninstall_port').value) || 22,
+                username: document.getElementById('uninstall_username').value.trim() || 'root',
+                password: document.getElementById('uninstall_password').value
+            };
+
+            try {
+                const res = await fetch('/api/uninstall', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+                const json = await res.json();
+
+                if (json.success) {
+                    resultEl.innerHTML = '<div class="result success"><strong>卸载成功</strong><br>' + json.message + '</div>';
+                } else {
+                    resultEl.innerHTML = '<div class="result error"><strong>卸载失败</strong><br>' + json.message + '</div>';
+                }
+            } catch (err) {
+                resultEl.innerHTML = '<div class="result error"><strong>请求失败</strong><br>' + err.message + '</div>';
+            }
+            uninstallBtn.disabled = false;
+        });
+
+        const listInboundsBtn = document.getElementById('listInboundsBtn');
+        const addInboundBtn = document.getElementById('addInboundBtn');
+        const inboundsListEl = document.getElementById('inboundsList');
+
+        function getInboundBaseData() {
+            return {
+                host: document.getElementById('inbound_host').value.trim(),
+                port: parseInt(document.getElementById('inbound_ssh_port').value) || 22,
+                username: document.getElementById('inbound_username').value.trim() || 'root',
+                password: document.getElementById('inbound_password').value,
+                panel_port: parseInt(document.getElementById('inbound_panel_port').value) || 6789,
+                web_base_path: document.getElementById('inbound_web_path').value.trim() || 'panel',
+                panel_username: document.getElementById('inbound_panel_user').value.trim() || 'admin',
+                panel_password: document.getElementById('inbound_panel_pass').value || 'admin'
+            };
+        }
+
+        listInboundsBtn.addEventListener('click', async () => {
+            const data = getInboundBaseData();
+            if (!data.host || !data.password) {
+                inboundsListEl.innerHTML = '<div class="result error">请填写服务器地址和 SSH 密码</div>';
+                return;
+            }
+            listInboundsBtn.disabled = true;
+            inboundsListEl.innerHTML = '<div class="result" style="border-color: var(--accent);">正在获取入站列表...</div>';
+            try {
+                const res = await fetch('/api/inbounds/list', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+                const json = await res.json();
+                if (json.success && json.inbounds && json.inbounds.length > 0) {
+                    let html = '<div style="margin-bottom:0.5rem;color:var(--text-muted);">共 ' + json.inbounds.length + ' 个入站：</div>';
+                    json.inbounds.forEach((ib, i) => {
+                        const remark = ib.remark || ib.id || ('入站#' + (i + 1));
+                        const protocol = (ib.protocol || '').toUpperCase();
+                        const port = ib.port || '-';
+                        html += '<div class="inbound-item"><span class="tag">' + protocol + '</span> ' + remark + ' <span style="color:var(--text-muted);">:' + port + '</span></div>';
+                    });
+                    inboundsListEl.innerHTML = html;
+                } else if (json.success && (!json.inbounds || json.inbounds.length === 0)) {
+                    inboundsListEl.innerHTML = '<div class="result" style="border-color: var(--text-muted);">暂无入站</div>';
+                } else {
+                    inboundsListEl.innerHTML = '<div class="result error">' + (json.message || '获取失败') + '</div>';
+                }
+            } catch (err) {
+                inboundsListEl.innerHTML = '<div class="result error">请求失败: ' + err.message + '</div>';
+            }
+            listInboundsBtn.disabled = false;
+        });
+
+        addInboundBtn.addEventListener('click', async () => {
+            const data = {
+                ...getInboundBaseData(),
+                protocol: document.getElementById('inbound_protocol').value,
+                inbound_port: parseInt(document.getElementById('inbound_port').value) || 443,
+                remark: document.getElementById('inbound_remark').value.trim() || 'et',
+                enable_tls: document.getElementById('inbound_tls').checked,
+                network: document.getElementById('inbound_network').value,
+                cert_domain: document.getElementById('inbound_cert_domain').value.trim() || null
+            };
+            if (!data.host || !data.password) {
+                inboundsListEl.innerHTML = '<div class="result error">请填写服务器地址和 SSH 密码</div>';
+                return;
+            }
+            addInboundBtn.disabled = true;
+            inboundsListEl.innerHTML = '<div class="result" style="border-color: var(--accent);">正在添加入站...</div>';
+            try {
+                const res = await fetch('/api/inbounds/add', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+                const json = await res.json();
+                if (json.success) {
+                    inboundsListEl.innerHTML = '<div class="result success">' + json.message + '</div>';
+                    listInboundsBtn.click();
+                } else {
+                    inboundsListEl.innerHTML = '<div class="result error">' + (json.message || '添加失败') + '</div>';
+                }
+            } catch (err) {
+                inboundsListEl.innerHTML = '<div class="result error">请求失败: ' + err.message + '</div>';
+            }
+            addInboundBtn.disabled = false;
+        });
+    </script>
+</body>
+</html>
