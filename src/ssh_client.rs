@@ -1,9 +1,11 @@
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use serde::{Deserialize, Serialize};
 use ssh2::Session;
-use std::io::Read;
+use std::fs;
+use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SshConfig {
@@ -163,26 +165,113 @@ sleep 2; echo done"#,
     }
 
     // 使用 x-ui 的 18 号命令（SSL 证书管理）安装证书
+    // 若有域名且本地缓存证书未超过 7 天，则直接推送复用，否则走 ACME 申请
     // IP: 18->6->y->跳过IPv6->端口80  |  域名: 18->1->domain->80->n->y
-    let ssl_cert_cmd = if let Some(ref domain) = config.domain {
-        let domain_escaped = domain.replace('\'', "'\\''");
-        format!(
-            r#"timeout 120 bash -c "printf '18\n1\n{}\n\nn\ny\n0' | sudo x-ui" 2>&1 || true"#,
-            domain_escaped
-        )
+    let cert_was_from_acme = if let Some(ref domain) = config.domain {
+        let domain = domain.trim();
+        if !domain.is_empty() {
+            if let Some((fc, pk)) = load_local_cert(domain) {
+                match push_cert_to_server(&mut sess, domain, &fc, &pk) {
+                    Ok(()) => {
+                        tracing::info!("已使用本地缓存的证书（{} 内有效）", "7天");
+                        false // 未走 ACME
+                    }
+                    Err(e) => {
+                        tracing::warn!("推送本地证书失败: {}，将重新申请", e);
+                        true
+                    }
+                }
+            } else {
+                true // 需要走 ACME
+            }
+        } else {
+            true
+        }
     } else {
-        format!(
-            r#"timeout 120 bash -c "printf '18\n6\n\n\n\n0' | sudo x-ui" 2>&1 || true"#
-        )
+        true // IP 证书，走 ACME
     };
-    if run_ssh_command(&mut sess, &ssl_cert_cmd).is_err() {
-        tracing::warn!("x-ui SSL 证书安装可能失败，请手动执行 x-ui 选择 18 安装证书");
+
+    if cert_was_from_acme {
+        let ssl_cert_cmd = if let Some(ref domain) = config.domain {
+            let domain = domain.trim();
+            if domain.is_empty() {
+                format!(
+                    r#"timeout 120 bash -c "printf '18\n6\n\n\n\n0' | sudo x-ui" 2>&1 || true"#
+                )
+            } else {
+                let domain_escaped = domain.replace('\'', "'\\''");
+                format!(
+                    r#"timeout 120 bash -c "printf '18\n1\n{}\n\nn\ny\n0' | sudo x-ui" 2>&1 || true"#,
+                    domain_escaped
+                )
+            }
+        } else {
+            format!(
+                r#"timeout 120 bash -c "printf '18\n6\n\n\n\n0' | sudo x-ui" 2>&1 || true"#
+            )
+        };
+        if run_ssh_command(&mut sess, &ssl_cert_cmd).is_err() {
+            tracing::warn!("x-ui SSL 证书安装可能失败，请手动执行 x-ui 选择 18 安装证书");
+        } else if let Some(ref domain) = config.domain {
+            let domain = domain.trim();
+            if !domain.is_empty() {
+                // 证书申请成功，拉取并保存到本地
+                match pull_cert_from_server(&mut sess, domain) {
+                    Ok((fc, pk)) => {
+                        if let Err(e) = save_local_cert(domain, &fc, &pk) {
+                            tracing::warn!("保存证书到本地失败: {}", e);
+                        }
+                    }
+                    Err(e) => tracing::warn!("拉取证书失败，未保存到本地: {}", e),
+                }
+            }
+        }
     }
 
     // 一键完成：通过面板 API 自动添加入站（VLESS + TLS，端口 443）
+    // 按域名/主机补充完整 tlsSettings：serverName + certificates + alpn，避免 403/502
     let user_safe = config.panel_username.replace('"', "\\\"").replace('$', "\\$").replace('`', "\\`");
     let pass_safe = config.panel_password.replace('"', "\\\"").replace('$', "\\$").replace('`', "\\`");
-    let body_tpl = r#"{"enable":true,"remark":"默认VLESS","listen":"","port":443,"protocol":"vless","settings":"{\"clients\":[{\"id\":\"UUID_PLACEHOLDER\",\"flow\":\"\",\"email\":\"default@local\"}],\"decryption\":\"none\"}","streamSettings":"{\"network\":\"tcp\",\"security\":\"tls\"}","sniffing":"{\"enabled\":true}"}"#;
+    let stream_settings_tpl = {
+        let (sn, cert, key) = config.domain.as_ref().map_or_else(
+            || {
+                let h = &config.ssh.host;
+                (
+                    h.as_str(),
+                    format!("/root/cert/{}/fullchain.pem", h),
+                    format!("/root/cert/{}/privkey.pem", h),
+                )
+            },
+            |d| {
+                let d = d.trim();
+                if d.is_empty() {
+                    let h = config.ssh.host.as_str();
+                    (
+                        h,
+                        format!("/root/cert/{}/fullchain.pem", h),
+                        format!("/root/cert/{}/privkey.pem", h),
+                    )
+                } else {
+                    (
+                        d,
+                        format!("/root/cert/{}/fullchain.pem", d),
+                        format!("/root/cert/{}/privkey.pem", d),
+                    )
+                }
+            },
+        );
+        let sn_esc = sn.replace('\\', "\\\\").replace('"', "\\\"");
+        let cert_esc = cert.replace('\\', "\\\\").replace('"', "\\\"");
+        let key_esc = key.replace('\\', "\\\\").replace('"', "\\\"");
+        format!(
+            r#"{{"network":"tcp","security":"tls","tlsSettings":{{"serverName":"{}","certificates":[{{"certificateFile":"{}","keyFile":"{}"}}],"alpn":["h2","http/1.1"]}}}}"#,
+            sn_esc, cert_esc, key_esc
+        )
+    };
+    let body_tpl = format!(
+        r#"{{"enable":true,"remark":"默认VLESS","listen":"","port":443,"protocol":"vless","settings":"{{\"clients\":[{{\"id\":\"UUID_PLACEHOLDER\",\"flow\":\"\",\"email\":\"default@local\"}}],\"decryption\":\"none\"}}","streamSettings":"{}","sniffing":"{{\"enabled\":true}}"}}"#,
+        stream_settings_tpl
+    );
     let inbound_script = format!(
         r#"#!/bin/bash
 WEB="{}"
@@ -483,8 +572,25 @@ pub fn add_inbound(panel: &PanelConfig, inbound: &InboundConfig) -> AddInboundRe
         .filter(|d| !d.is_empty())
         .unwrap_or("");
 
-    // 构建 streamSettings：network + security + (可选) tlsSettings + (grpc) grpcSettings
-    let stream_settings = if net == "grpc" {
+    // 构建 streamSettings：network + security + (可选) tlsSettings + (grpc) grpcSettings + (xhttp) xhttpSettings
+    let stream_settings = if net == "xhttp" {
+        // XHTTP 取代 gRPC，默认 path 留空即可，stream-up 模式
+        if let Some(ref cert) = cert_path {
+            let key = cert.replace("fullchain.pem", "privkey.pem");
+            format!(
+                r#"{{"network":"xhttp","security":"{}","tlsSettings":{{"serverName":"{}","certificates":[{{"certificateFile":"{}","keyFile":"{}"}}],"alpn":["h2","http/1.1"]}},"xhttpSettings":{{"path":""}}}}"#,
+                security,
+                server_name.replace('\\', "\\\\").replace('"', "\\\""),
+                cert.replace('\\', "\\\\").replace('"', "\\\""),
+                key.replace('\\', "\\\\").replace('"', "\\\"")
+            )
+        } else {
+            format!(
+                r#"{{"network":"xhttp","security":"{}","xhttpSettings":{{"path":""}}}}"#,
+                security
+            )
+        }
+    } else if net == "grpc" {
         if let Some(ref cert) = cert_path {
             let key = cert.replace("fullchain.pem", "privkey.pem");
             format!(
@@ -720,6 +826,128 @@ rm -f "$COOKIE"
             inbounds: None,
         },
     }
+}
+
+/// 证书本地缓存目录：./certs/
+fn cert_cache_dir() -> PathBuf {
+    std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("certs")
+}
+
+/// 将域名/IP 转为安全的目录名
+fn sanitize_cert_key(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            _ => c,
+        })
+        .collect()
+}
+
+const CERT_MAX_AGE_SECS: u64 = 7 * 24 * 3600; // 7 天
+
+/// 从本地缓存读取证书，若存在且未超过 7 天则返回 (fullchain, privkey)
+fn load_local_cert(domain: &str) -> Option<(Vec<u8>, Vec<u8>)> {
+    let key = sanitize_cert_key(domain);
+    if key.is_empty() {
+        return None;
+    }
+    let dir = cert_cache_dir().join(&key);
+    let full = dir.join("fullchain.pem");
+    let priv_f = dir.join("privkey.pem");
+    let meta = fs::metadata(&full).ok()?;
+    let modified = meta.modified().ok()?;
+    let modified_secs = modified.duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    if now_secs.saturating_sub(modified_secs) > CERT_MAX_AGE_SECS {
+        return None;
+    }
+    let fc = fs::read(&full).ok()?;
+    let pk = fs::read(&priv_f).ok()?;
+    if fc.is_empty() || pk.is_empty() {
+        return None;
+    }
+    Some((fc, pk))
+}
+
+/// 保存证书到本地缓存
+fn save_local_cert(domain: &str, fullchain: &[u8], privkey: &[u8]) -> Result<(), String> {
+    let key = sanitize_cert_key(domain);
+    if key.is_empty() {
+        return Err("无效的证书标识".to_string());
+    }
+    let dir = cert_cache_dir().join(&key);
+    fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {}", e))?;
+    fs::write(dir.join("fullchain.pem"), fullchain).map_err(|e| format!("写入证书失败: {}", e))?;
+    fs::write(dir.join("privkey.pem"), privkey).map_err(|e| format!("写入私钥失败: {}", e))?;
+    tracing::info!("证书已保存到本地: {:?}", dir);
+    Ok(())
+}
+
+/// 通过 SCP 将本地证书推送到远程 /root/cert/{domain}/
+fn push_cert_to_server(
+    sess: &mut Session,
+    domain: &str,
+    fullchain: &[u8],
+    privkey: &[u8],
+) -> Result<(), String> {
+    let remote_dir = format!("/root/cert/{}", domain.replace('\\', "").replace('"', ""));
+    let remote_full = format!("{}/fullchain.pem", remote_dir);
+    let remote_priv = format!("{}/privkey.pem", remote_dir);
+    // 创建远程目录
+    run_ssh_command(sess, &format!("mkdir -p {}", remote_dir))?;
+    // SCP 上传
+    let mode = 0o644;
+    {
+        let mut channel = sess
+            .scp_send(Path::new(&remote_full), mode, fullchain.len() as u64, None)
+            .map_err(|e| format!("SCP 上传证书失败: {}", e))?;
+        channel.write_all(fullchain).map_err(|e| format!("写入证书失败: {}", e))?;
+        channel.send_eof().map_err(|e| e.to_string())?;
+        channel.wait_eof().map_err(|e| e.to_string())?;
+        channel.close().map_err(|e| e.to_string())?;
+        channel.wait_close().map_err(|e| e.to_string())?;
+    }
+    {
+        let mut channel = sess
+            .scp_send(Path::new(&remote_priv), mode, privkey.len() as u64, None)
+            .map_err(|e| format!("SCP 上传私钥失败: {}", e))?;
+        channel.write_all(privkey).map_err(|e| format!("写入私钥失败: {}", e))?;
+        channel.send_eof().map_err(|e| e.to_string())?;
+        channel.wait_eof().map_err(|e| e.to_string())?;
+        channel.close().map_err(|e| e.to_string())?;
+        channel.wait_close().map_err(|e| e.to_string())?;
+    }
+    tracing::info!("已使用本地缓存的证书推送到服务器");
+    Ok(())
+}
+
+/// 通过 SCP 从远程拉取证书并保存到本地
+fn pull_cert_from_server(sess: &mut Session, domain: &str) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let remote_full = format!("/root/cert/{}/fullchain.pem", domain.replace('\\', "").replace('"', ""));
+    let remote_priv = format!("/root/cert/{}/privkey.pem", domain.replace('\\', "").replace('"', ""));
+    let (mut ch_full, _) = sess
+        .scp_recv(Path::new(&remote_full))
+        .map_err(|e| format!("SCP 拉取证书失败: {}", e))?;
+    let mut fullchain = Vec::new();
+    ch_full.read_to_end(&mut fullchain).map_err(|e| e.to_string())?;
+    ch_full.send_eof().map_err(|e| e.to_string())?;
+    ch_full.wait_eof().map_err(|e| e.to_string())?;
+    ch_full.close().map_err(|e| e.to_string())?;
+    ch_full.wait_close().map_err(|e| e.to_string())?;
+
+    let (mut ch_priv, _) = sess
+        .scp_recv(Path::new(&remote_priv))
+        .map_err(|e| format!("SCP 拉取私钥失败: {}", e))?;
+    let mut privkey = Vec::new();
+    ch_priv.read_to_end(&mut privkey).map_err(|e| e.to_string())?;
+    ch_priv.send_eof().map_err(|e| e.to_string())?;
+    ch_priv.wait_eof().map_err(|e| e.to_string())?;
+    ch_priv.close().map_err(|e| e.to_string())?;
+    ch_priv.wait_close().map_err(|e| e.to_string())?;
+
+    Ok((fullchain, privkey))
 }
 
 fn run_ssh_command(sess: &mut Session, cmd: &str) -> Result<String, String> {
